@@ -30,7 +30,7 @@ export interface AppConfig {
   mode: 'cloud' | 'local';
   apiKey?: string;
   spreadsheetId?: string;
-  file?: File;
+  files?: File[];
 }
 
 export enum DataStatus {

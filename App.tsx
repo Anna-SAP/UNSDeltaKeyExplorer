@@ -21,12 +21,38 @@ function App() {
       let title = "Unknown Sheet";
 
       // --- LOGIC BRANCHING ---
-      if (config.mode === 'local' && config.file) {
-         // Local Mode
+      if (config.mode === 'local' && config.files && config.files.length > 0) {
+         // Local Mode: Process Multiple Files
          setStatus(DataStatus.FETCHING_ROWS); // Simulate fetching
-         const result = await readExcelFile(config.file);
-         rawDataMap = result.data;
-         title = result.title;
+         
+         // Use Promise.allSettled to allow some files to fail while others succeed
+         const filePromises = config.files.map(file => readExcelFile(file));
+         const results = await Promise.allSettled(filePromises);
+         
+         const successfulFiles: string[] = [];
+         
+         results.forEach((result) => {
+           if (result.status === 'fulfilled') {
+              const fileData = result.value;
+              // Merge data. We prefix sheet names with filename to avoid collision if sheets have same names
+              Object.entries(fileData.data).forEach(([sheetName, rows]) => {
+                  const uniqueSheetKey = `${fileData.title} :: ${sheetName}`;
+                  rawDataMap[uniqueSheetKey] = rows;
+              });
+              successfulFiles.push(fileData.title);
+           } else {
+             console.error("Failed to parse a file:", result.reason);
+           }
+         });
+
+         if (successfulFiles.length === 0) {
+            throw new Error("Failed to read all uploaded files.");
+         }
+
+         title = successfulFiles.length === 1 
+            ? successfulFiles[0] 
+            : `${successfulFiles.length} Local Files`;
+         
       } 
       else if (config.mode === 'cloud' && config.apiKey && config.spreadsheetId) {
          // Cloud Mode
@@ -61,6 +87,10 @@ function App() {
             allRecords.push(...sheetRecords);
           });
 
+          if (allRecords.length === 0) {
+             throw new Error("No valid keys found in the source data.");
+          }
+
           setRecords(allRecords);
           setStatus(DataStatus.READY);
         } catch (e: any) {
@@ -89,7 +119,7 @@ function App() {
         <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-6"></div>
         <h2 className="text-2xl font-bold mb-2">
             {status === DataStatus.FETCHING_META && 'Connecting...'}
-            {status === DataStatus.FETCHING_ROWS && 'Reading Data...'}
+            {status === DataStatus.FETCHING_ROWS && 'Processing Files...'}
             {status === DataStatus.PARSING && 'Indexing Keys...'}
         </h2>
         <p className="text-slate-400">Please wait while we process the Delta Information.</p>

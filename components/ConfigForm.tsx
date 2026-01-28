@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { AppConfig } from '../types';
-import { Key, Database, ArrowRight, AlertCircle, UploadCloud, FileSpreadsheet, X, Cloud } from 'lucide-react';
+import { Key, Database, ArrowRight, AlertCircle, UploadCloud, FileSpreadsheet, X, Cloud, Plus } from 'lucide-react';
 
 interface ConfigFormProps {
   onConnect: (config: AppConfig) => void;
@@ -18,7 +18,7 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
   const [apiKey, setApiKey] = useState('');
 
   // Local State
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,10 +37,10 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
         apiKey: apiKey
       });
     } else {
-      if (!selectedFile) return;
+      if (files.length === 0) return;
       onConnect({
         mode: 'local',
-        file: selectedFile
+        files: files
       });
     }
   };
@@ -56,12 +56,23 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
     }
   };
 
-  const validateAndSetFile = (file: File) => {
-     if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        setSelectedFile(file);
-     } else {
-        alert("Please upload a valid Excel file (.xlsx)");
-     }
+  const validateAndAddFiles = (newFiles: FileList | File[]) => {
+    const validFiles: File[] = [];
+    Array.from(newFiles).forEach(file => {
+      // Check for duplicates
+      const isDuplicate = files.some(f => f.name === file.name && f.size === file.size);
+      
+      if ((file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) && !isDuplicate) {
+         validFiles.push(file);
+      }
+    });
+    
+    if (validFiles.length > 0) {
+        setFiles(prev => [...prev, ...validFiles]);
+    } else if (Array.from(newFiles).length > 0 && files.length > 0) {
+        // If user tried to add files but all were duplicates or invalid
+        // logic handled silently or add toast here if needed
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -69,20 +80,21 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
     e.stopPropagation();
     setDragActive(false);
     
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      validateAndSetFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      validateAndAddFiles(e.dataTransfer.files);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      validateAndSetFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      validateAndAddFiles(e.target.files);
     }
+    // Reset input so same file can be selected again if needed (after delete)
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const clearFile = () => {
-    setSelectedFile(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  const removeFile = (indexToRemove: number) => {
+    setFiles(prev => prev.filter((_, index) => index !== indexToRemove));
   };
 
   return (
@@ -163,14 +175,14 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
           ) : (
             <>
                 {/* Local Mode Input */}
-                <div className="animate-in fade-in slide-in-from-left-4 duration-300">
-                    <label className="block text-sm font-medium text-slate-300 mb-2">
-                        Upload .xlsx File
-                    </label>
-                    
-                    {!selectedFile ? (
+                <div className="animate-in fade-in slide-in-from-left-4 duration-300 space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">
+                            Upload .xlsx Files
+                        </label>
+                        
                         <div 
-                            className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer 
+                            className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer 
                             ${dragActive ? 'border-blue-500 bg-blue-500/10' : 'border-slate-600 hover:border-slate-500 hover:bg-slate-800/50'}`}
                             onDragEnter={handleDrag}
                             onDragLeave={handleDrag}
@@ -178,37 +190,45 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
                             onDrop={handleDrop}
                             onClick={() => fileInputRef.current?.click()}
                         >
-                            <div className="w-12 h-12 bg-slate-700 rounded-full flex items-center justify-center mx-auto mb-3">
-                                <FileSpreadsheet className="w-6 h-6 text-slate-300" />
+                            <div className="w-10 h-10 bg-slate-700 rounded-full flex items-center justify-center mx-auto mb-2">
+                                <Plus className="w-5 h-5 text-slate-300" />
                             </div>
-                            <p className="text-slate-200 font-medium mb-1">Click to upload or drag and drop</p>
+                            <p className="text-slate-200 font-medium mb-1 text-sm">Add files or drag & drop</p>
                             <p className="text-slate-500 text-xs">Excel Files (.xlsx) only</p>
                             <input 
                                 ref={fileInputRef}
                                 type="file" 
                                 accept=".xlsx, .xls"
                                 className="hidden"
+                                multiple
                                 onChange={handleFileChange}
                             />
                         </div>
-                    ) : (
-                        <div className="bg-slate-700/50 rounded-lg p-4 flex items-center justify-between border border-slate-600">
-                             <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 bg-green-900/30 rounded-lg flex items-center justify-center border border-green-500/20">
-                                    <FileSpreadsheet className="w-5 h-5 text-green-400" />
+                    </div>
+
+                    {/* File List */}
+                    {files.length > 0 && (
+                        <div className="space-y-2 max-h-[160px] overflow-y-auto custom-scrollbar pr-1">
+                            {files.map((file, index) => (
+                                <div key={`${file.name}-${index}`} className="bg-slate-700/50 rounded-lg p-3 flex items-center justify-between border border-slate-600 animate-in fade-in slide-in-from-top-2 duration-200">
+                                     <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 bg-green-900/30 rounded-lg flex items-center justify-center border border-green-500/20 shrink-0">
+                                            <FileSpreadsheet className="w-4 h-4 text-green-400" />
+                                        </div>
+                                        <div className="overflow-hidden">
+                                            <p className="text-sm font-medium text-slate-200 truncate max-w-[180px]">{file.name}</p>
+                                            <p className="text-[10px] text-slate-500">{(file.size / 1024).toFixed(1)} KB</p>
+                                        </div>
+                                     </div>
+                                     <button 
+                                        type="button"
+                                        onClick={() => removeFile(index)}
+                                        className="p-1.5 hover:bg-slate-600 rounded-full transition-colors text-slate-400 hover:text-red-400"
+                                     >
+                                        <X className="w-4 h-4" />
+                                     </button>
                                 </div>
-                                <div className="overflow-hidden">
-                                    <p className="text-sm font-medium text-slate-200 truncate max-w-[180px]">{selectedFile.name}</p>
-                                    <p className="text-xs text-slate-500">{(selectedFile.size / 1024).toFixed(1)} KB</p>
-                                </div>
-                             </div>
-                             <button 
-                                type="button"
-                                onClick={clearFile}
-                                className="p-2 hover:bg-slate-600 rounded-full transition-colors text-slate-400 hover:text-white"
-                             >
-                                <X className="w-4 h-4" />
-                             </button>
+                            ))}
                         </div>
                     )}
                 </div>
@@ -224,9 +244,9 @@ export const ConfigForm: React.FC<ConfigFormProps> = ({ onConnect, loading, erro
 
           <button
             type="submit"
-            disabled={loading || (mode === 'local' && !selectedFile)}
+            disabled={loading || (mode === 'local' && files.length === 0)}
             className={`w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg shadow-lg shadow-blue-500/20 transition-all flex items-center justify-center gap-2 ${
-              loading || (mode === 'local' && !selectedFile) ? 'opacity-75 cursor-not-allowed grayscale' : ''
+              loading || (mode === 'local' && files.length === 0) ? 'opacity-75 cursor-not-allowed grayscale' : ''
             }`}
           >
             {loading ? (
