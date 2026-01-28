@@ -1,45 +1,25 @@
-import { read, utils } from 'xlsx';
-
 /**
- * Reads a local Excel file and returns data in the same structure 
- * as the Google Sheets API (Record<SheetName, Rows[]>).
+ * Reads a file as an ArrayBuffer. 
+ * This is a lightweight asynchronous operation that does NOT block the main thread.
+ * The heavy parsing will be delegated to the Worker.
  */
-export const readExcelFile = async (file: File): Promise<{ title: string, data: Record<string, string[][]> }> => {
+export const readFileAsBuffer = async (file: File): Promise<{ title: string, buffer: ArrayBuffer }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 
     reader.onload = (e) => {
-      try {
-        const data = e.target?.result;
-        if (!data) throw new Error("File is empty");
-
-        const workbook = read(data, { type: 'array' });
-        
-        const result: Record<string, string[][]> = {};
-        
-        workbook.SheetNames.forEach(sheetName => {
-          const worksheet = workbook.Sheets[sheetName];
-          // Convert sheet to JSON array of arrays (header: 1 gives us a 2D array like Google API)
-          // range: 0 ensures we start from the beginning, raw: false ensures we get strings
-          const json: string[][] = utils.sheet_to_json(worksheet, { 
-            header: 1, 
-            defval: "",
-            raw: false 
-          }) as string[][];
-          
-          result[sheetName] = json;
-        });
-
-        resolve({
-          title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension for title
-          data: result
-        });
-      } catch (err) {
-        reject(err);
+      const buffer = e.target?.result;
+      if (!buffer || !(buffer instanceof ArrayBuffer)) {
+        reject(new Error("Failed to read file buffer"));
+        return;
       }
+      resolve({
+        title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension for title
+        buffer: buffer
+      });
     };
 
-    reader.onerror = (err) => {
+    reader.onerror = () => {
       reject(new Error("Failed to read file"));
     };
 

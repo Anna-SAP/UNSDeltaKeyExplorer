@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { ConfigForm } from './components/ConfigForm';
 import { Dashboard } from './components/Dashboard';
 import { GoogleSheetService } from './services/googleSheets';
-import { readExcelFile } from './services/excelReader';
-import { processSheetData } from './services/parser';
+import { readFileAsBuffer } from './services/excelReader'; // Updated import
+import { processFileInWorker } from './services/parsingWorker'; // Updated import
 import { AppConfig, DataStatus, ParsedRecord } from './types';
+import { processSheetData } from './services/parser'; // Keep for cloud fallback
 
 function App() {
   const [status, setStatus] = useState<DataStatus>(DataStatus.IDLE);
@@ -17,87 +18,81 @@ function App() {
     setError(null);
 
     try {
-      let rawDataMap: Record<string, string[][]> = {};
       let title = "Unknown Sheet";
+      const allRecords: ParsedRecord[] = [];
 
       // --- LOGIC BRANCHING ---
       if (config.mode === 'local' && config.files && config.files.length > 0) {
-         // Local Mode: Process Multiple Files
-         setStatus(DataStatus.FETCHING_ROWS); // Simulate fetching
-         
-         // Use Promise.allSettled to allow some files to fail while others succeed
-         const filePromises = config.files.map(file => readExcelFile(file));
-         const results = await Promise.allSettled(filePromises);
+         setStatus(DataStatus.FETCHING_ROWS);
          
          const successfulFiles: string[] = [];
-         
-         results.forEach((result) => {
-           if (result.status === 'fulfilled') {
-              const fileData = result.value;
-              // Merge data. We prefix sheet names with filename to avoid collision if sheets have same names
-              Object.entries(fileData.data).forEach(([sheetName, rows]) => {
-                  const uniqueSheetKey = `${fileData.title} :: ${sheetName}`;
-                  rawDataMap[uniqueSheetKey] = rows;
-              });
-              successfulFiles.push(fileData.title);
-           } else {
-             console.error("Failed to parse a file:", result.reason);
-           }
-         });
 
-         if (successfulFiles.length === 0) {
-            throw new Error("Failed to read all uploaded files.");
+         // SEQUENTIAL PROCESSING
+         // We iterate through files one by one to prevent spawning 50+ workers at once (which crashes browsers).
+         // This also allows the UI to remain responsive between file loads.
+         for (const file of config.files) {
+            try {
+              // 1. Read binary (Main Thread - Fast/Async)
+              const { title: fTitle, buffer } = await readFileAsBuffer(file);
+              
+              // 2. Parse Excel & Keys (Worker Thread - Heavy)
+              // We transfer the buffer to the worker, keeping main thread completely free.
+              const fileRecords = await processFileInWorker(fTitle, buffer);
+              
+              allRecords.push(...fileRecords);
+              successfulFiles.push(fTitle);
+
+            } catch (err: any) {
+              console.error(`Failed to process file ${file.name}:`, err);
+              // We continue to next file even if one fails
+            }
          }
 
-         title = successfulFiles.length === 1 
-            ? successfulFiles[0] 
-            : `${successfulFiles.length} Local Files`;
+         if (successfulFiles.length === 0) throw new Error("Failed to read all uploaded files.");
+         title = successfulFiles.length === 1 ? successfulFiles[0] : `${successfulFiles.length} Local Files`;
          
+         // Local mode logic ends here, we already have parsed records
+         if (allRecords.length === 0) throw new Error("No valid keys found in the source data.");
+         
+         setSheetTitle(title);
+         setRecords(allRecords);
+         setStatus(DataStatus.READY);
+
       } 
       else if (config.mode === 'cloud' && config.apiKey && config.spreadsheetId) {
-         // Cloud Mode
+         // --- CLOUD MODE (Legacy Logic) ---
          const service = new GoogleSheetService(config.apiKey, config.spreadsheetId);
-         
-         // 1. Fetch Metadata
          const metadata = await service.fetchMetadata();
          title = metadata.properties.title;
          const sheetNames = metadata.sheets.map(s => s.properties.title);
 
          if (sheetNames.length === 0) throw new Error('No sheets found in this spreadsheet.');
 
-         // 2. Fetch All Data
          setStatus(DataStatus.FETCHING_ROWS);
-         rawDataMap = await service.fetchAllSheetValues(sheetNames);
+         const rawDataMap = await service.fetchAllSheetValues(sheetNames);
+         
+         setSheetTitle(title);
+         setStatus(DataStatus.PARSING);
+
+         // Use setTimeout to allow UI render cycle before blocking task (Cloud parsing is still sync for now)
+         setTimeout(() => {
+            try {
+              Object.entries(rawDataMap).forEach(([sheetName, rows]) => {
+                const sheetRecords = processSheetData(sheetName, rows);
+                allRecords.push(...sheetRecords);
+              });
+
+              if (allRecords.length === 0) throw new Error("No valid keys found.");
+              setRecords(allRecords);
+              setStatus(DataStatus.READY);
+            } catch (e: any) {
+              setError(e.message);
+              setStatus(DataStatus.ERROR);
+            }
+         }, 100);
       } else {
          throw new Error("Invalid Configuration");
       }
-
-      setSheetTitle(title);
-
-      // 3. Parse Data (Common Pipeline)
-      setStatus(DataStatus.PARSING);
-      
-      // Use setTimeout to allow UI to update to "Parsing" state before heavy synchronous JS op
-      setTimeout(() => {
-        try {
-          const allRecords: ParsedRecord[] = [];
-          
-          Object.entries(rawDataMap).forEach(([sheetName, rows]) => {
-            const sheetRecords = processSheetData(sheetName, rows);
-            allRecords.push(...sheetRecords);
-          });
-
-          if (allRecords.length === 0) {
-             throw new Error("No valid keys found in the source data.");
-          }
-
-          setRecords(allRecords);
-          setStatus(DataStatus.READY);
-        } catch (e: any) {
-           setError('Parsing error: ' + e.message);
-           setStatus(DataStatus.ERROR);
-        }
-      }, 100);
 
     } catch (e: any) {
       console.error(e);
@@ -112,7 +107,7 @@ function App() {
     return <Dashboard data={records} sheetName={sheetTitle} />;
   }
 
-  // Loading Overlay for intermediate states
+  // Loading Overlay
   if (status === DataStatus.FETCHING_META || status === DataStatus.FETCHING_ROWS || status === DataStatus.PARSING) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white">
@@ -120,9 +115,11 @@ function App() {
         <h2 className="text-2xl font-bold mb-2">
             {status === DataStatus.FETCHING_META && 'Connecting...'}
             {status === DataStatus.FETCHING_ROWS && 'Processing Files...'}
-            {status === DataStatus.PARSING && 'Indexing Keys...'}
+            {status === DataStatus.PARSING && 'Finalizing Index...'}
         </h2>
-        <p className="text-slate-400">Please wait while we process the Delta Information.</p>
+        <p className="text-slate-400">
+           {status === DataStatus.FETCHING_ROWS ? 'Parsing Excel data in background...' : 'Please wait...'}
+        </p>
       </div>
     );
   }
